@@ -120,6 +120,14 @@ async function inLuau(e) {
   }
 }
 
+// ── Version: index.html must load every file with ?v=VERSION, or phones keep old cached copies ──
+const { VERSION, CHANGES } = vm.runInNewContext(`${readFileSync(new URL('../version.js', import.meta.url), 'utf8')};({ VERSION, CHANGES })`);
+const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+for (const [, file, v] of html.matchAll(/<script src="([^"?]+)(?:\?v=([^"]*))?"/g)) {
+  if (v !== VERSION) errors.push(`index.html loads ${file} with ?v=${v ?? '(none)'} but version.js says ${VERSION}`);
+}
+if (!CHANGES[VERSION]?.length) errors.push(`version.js has no CHANGES entry for ${VERSION}`);
+
 // ── Run ──
 const ids = new Set(LESSONS.map(l => l.id)), seen = new Map();
 for (const e of EX) {

@@ -10,25 +10,36 @@ const dayNum = (d = new Date()) => Math.floor((d.getTime() - d.getTimezoneOffset
 
 // ── Saved progress (this phone only) ──
 // mem: { exerciseId: [box, dueDay] }. Box 1 = weak, 5 = solid. Unseen exercises aren't stored.
-let S = { at: -1, xp: 0, streak: 0, day: '', muted: false, mem: {} };
-try { Object.assign(S, JSON.parse(localStorage.getItem('luau-phone') || '{}')); } catch { /* private mode */ }
+// stats: lifetime numbers for the profile. types: { kind: [rightFirstTry, answered] }. days: { dayNum: xp }.
+let S = { at: -1, xp: 0, streak: 0, day: '', muted: false, mem: {}, ver: '', stats: {} };
+let saved = {};
+try { saved = JSON.parse(localStorage.getItem('luau-phone') || '{}'); } catch { /* private mode */ }
+Object.assign(S, saved);
+// Saves from before version numbers: 1.1.0 added the review schedule (mem).
+if (!S.ver && S.at >= 0) S.ver = 'mem' in saved ? '1.1.0' : '1.0.0';
+S.stats = { rounds: 0, perfect: 0, answered: 0, firstTry: 0, ms: 0, best: S.streak, types: {}, days: {}, ...S.stats };
 const save = () => { try { localStorage.setItem('luau-phone', JSON.stringify(S)); } catch { /* ignore */ } };
 // A streak only survives if you practised today or yesterday.
 if (S.day !== today() && S.day !== yesterday() && S.streak) { S.streak = 0; save(); }
+
+// New installs start on the current version; returning players see what changed since their last visit.
+if (S.at < 0 && !S.ver) S.ver = VERSION;
+const newer = (a, b) => { const x = a.split('.').map(Number), y = (b || '0').split('.').map(Number); for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i]; return false; };
 
 // The PC app's Profile shows a link with ?at=<lesson id>; opening it sets your progress here.
 const fromPc = new URLSearchParams(location.search).get('at');
 if (fromPc && idx(fromPc) >= 0) { S.at = idx(fromPc); save(); history.replaceState(null, '', location.pathname); }
 
 // ── Spaced repetition (Leitner boxes) ──
-// Right on the first try moves an exercise up a box and pushes it further out; a miss sends it back to box 1, due now.
+// Box 1 = missed last time, 2 = learning, 3+ = mastered. Right on the first try moves an exercise up a box
+// (a brand-new one starts at 2) and pushes it further out; a miss sends it back to box 1, due now.
 const GAP = [0, 1, 3, 7, 14, 30]; // days until due again, by box
 const memOf = e => S.mem[e.id];
 const isDue = e => { const m = memOf(e); return m && m[1] <= dayNum(); };
 const isWeak = e => memOf(e)?.[0] === 1;
 const isMastered = e => (memOf(e)?.[0] || 0) >= 3;
 function remember(e, right) {
-  const box = right ? Math.min((memOf(e)?.[0] || 0) + 1, 5) : 1;
+  const box = right ? Math.min(Math.max((memOf(e)?.[0] || 0) + 1, 2), 5) : 1;
   S.mem[e.id] = [box, dayNum() + (right ? GAP[box] : 0)];
   save();
 }
@@ -73,6 +84,8 @@ function sfx(kind) {
     });
   } catch { /* no audio */ }
 }
+const PERSON = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>';
+const CROSS = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
 const SPEAKER = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h4l5-4v14l-5-4H4z"/>';
 const muteIcon = () => SPEAKER + (S.muted ? '<path d="M17 9l5 6M22 9l-5 6"/></svg>' : '<path d="M17 8.5a5 5 0 0 1 0 7M19.5 6a8.5 8.5 0 0 1 0 12"/></svg>');
 
@@ -90,10 +103,14 @@ function home() {
       <div class="stats">
         <span class="xp"><b>${S.xp}</b> XP</span>
         <span class="st"><b>${S.streak}</b> day streak</span>
-        <button class="icon-btn" id="mute" aria-label="Sounds on or off">${muteIcon()}</button>
+        <button class="icon-btn" id="me" aria-label="Profile and stats">${PERSON}</button>
       </div>
     </header>
     <div class="screen">
+      ${S.ver !== VERSION ? `<div class="card news">
+        <div><span class="kind">Updated to v${VERSION}</span>
+        <ul>${Object.keys(CHANGES).filter(v => newer(v, S.ver)).flatMap(v => CHANGES[v]).map(c => `<li>${esc(c)}</li>`).join('')}</ul></div>
+        <button class="icon-btn" id="news-x" aria-label="Dismiss">${CROSS}</button></div>` : ''}
       <div class="home-head"><h1>Practice what you learned</h1><p>Short exercises from the lessons you've finished on PC.</p></div>
       <div class="card pc">
         <div><small>Finished on PC up to</small><b>${esc(LESSONS[S.at].title)}</b></div>
@@ -118,12 +135,105 @@ function home() {
             ${n ? `<em class="bar"><u style="width:${pct}%"></u></em>` : ''}</button>`;
         }).join('')}
       </div>
+      <p class="ver">Luau Learn phone v${VERSION}</p>
     </div>`;
-  $('mute').onclick = () => { S.muted = !S.muted; save(); $('mute').innerHTML = muteIcon(); sfx('ok'); };
+  $('me').onclick = profile;
+  if ($('news-x')) $('news-x').onclick = () => { S.ver = VERSION; save(); app.querySelector('.news').remove(); };
   $('change').onclick = picker;
   $('go').onclick = () => start({});
   if ($('weak')) $('weak').onclick = () => start({ weak: true });
   app.querySelectorAll('[data-ch]').forEach(b => b.onclick = () => start({ chapter: b.dataset.ch }));
+}
+
+// ── Profile ──
+const DAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const fmtTime = ms => { const m = Math.round(ms / 60000); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`; };
+const pct = (a, b) => (b ? Math.round(a / b * 100) : 0);
+function profile() {
+  const st = S.stats, d = dayNum(), pool = unlocked();
+  // Last 7 days of XP, oldest first
+  const week = Array.from({ length: 7 }, (_, i) => {
+    const n = d - 6 + i, date = new Date(); date.setDate(date.getDate() - 6 + i);
+    return { xp: st.days[n] || 0, label: i === 6 ? 'Today' : DAY[date.getDay()], today: i === 6 };
+  });
+  const top = Math.max(...week.map(w => w.xp), 1), weekXp = week.reduce((a, w) => a + w.xp, 0);
+  // Memory strength of the exercises you've unlocked
+  const groups = [
+    ['New', pool.filter(e => !memOf(e)).length, 'm0'],
+    ['Weak', pool.filter(isWeak).length, 'm1'],
+    ['Learning', pool.filter(e => memOf(e)?.[0] === 2).length, 'm2'],
+    ['Mastered', pool.filter(isMastered).length, 'm3'],
+  ];
+  // Accuracy by exercise type, weakest first
+  const types = Object.entries(st.types).filter(([, [, n]]) => n).map(([t, [r, n]]) => ({ t, r, n, p: pct(r, n) })).sort((a, b) => a.p - b.p);
+  // Lessons with the most weak exercises
+  const weakLessons = LESSONS.map(l => ({ l, n: pool.filter(e => e.l === l.id && isWeak(e)).length })).filter(x => x.n).sort((a, b) => b.n - a.n).slice(0, 3);
+  app.innerHTML = `
+    <div class="screen profile">
+      <div class="top"><button class="icon-btn" id="back" aria-label="Back home">←</button><h1>Profile</h1></div>
+      <div class="tiles">
+        <div class="xp"><b>${S.xp}</b><small>Total XP</small></div>
+        <div class="st"><b>${S.streak}</b><small>Streak</small><small class="best">best ${Math.max(st.best, S.streak)}</small></div>
+        <div class="ac"><b>${st.answered ? pct(st.firstTry, st.answered) + '%' : '–'}</b><small>First try</small></div>
+        <div><b>${st.rounds}</b><small>Rounds</small></div>
+        <div><b>${st.perfect}</b><small>Perfect</small></div>
+        <div><b>${fmtTime(st.ms)}</b><small>Practised</small></div>
+      </div>
+
+      <section>
+        <div class="sec-head"><span class="label">XP, last 7 days</span><span class="sub">${weekXp} XP this week</span></div>
+        <div class="week" role="img" aria-label="XP per day for the last 7 days: ${week.map(w => `${w.label} ${w.xp}`).join(', ')}">
+          ${week.map(w => `<button class="day ${w.today ? 'today' : ''}" data-tip="${w.label}: ${w.xp} XP">
+            <span class="val">${w.today || w.xp === top && w.xp ? w.xp : ''}</span>
+            <span class="col"><i style="height:${w.xp ? Math.max(w.xp / top * 100, 4) : 0}%"></i></span>
+            <span class="lbl">${w.label}</span></button>`).join('')}
+        </div>
+        <div class="tip" id="tip" aria-live="polite"></div>
+      </section>
+
+      <section>
+        <div class="sec-head"><span class="label">Memory strength</span><span class="sub">${pool.length} unlocked exercises</span></div>
+        <div class="stack">${groups.filter(g => g[1]).map(([name, n, cls]) => `<i class="${cls}" style="flex:${n}" title="${name}: ${n}"></i>`).join('')}</div>
+        <div class="legend">${groups.map(([name, n, cls]) => `<span><i class="${cls}"></i>${name} <b>${n}</b></span>`).join('')}</div>
+      </section>
+
+      <section>
+        <div class="sec-head"><span class="label">First-try accuracy by type</span><span class="sub">weakest first</span></div>
+        ${types.length ? `<div class="hbars">${types.map(x => `<div class="hbar"><span>${KIND[x.t]}</span>
+          <em><u style="width:${Math.max(x.p, 2)}%"></u></em><b>${x.p}%</b><small>${x.r}/${x.n}</small></div>`).join('')}</div>`
+          : '<p class="empty">Play a round to see this.</p>'}
+      </section>
+
+      <section>
+        <div class="sec-head"><span class="label">Needs work</span></div>
+        ${weakLessons.length ? weakLessons.map(({ l, n }) => `<button class="card row-btn" data-lesson="${esc(l.id)}">
+          <div><b>${esc(l.title)}</b><span>${esc(l.chapter)} · ${n} weak</span></div><i>Drill</i></button>`).join('')
+          : '<p class="empty">Nothing weak right now.</p>'}
+      </section>
+
+      <section>
+        <div class="sec-head"><span class="label">Settings</span></div>
+        <button class="card row-btn" id="mute"><div><b>Sounds</b><span>${S.muted ? 'Off' : 'On'}</span></div><i class="icon">${muteIcon()}</i></button>
+        <button class="card row-btn" id="change"><div><b>Finished on PC up to</b><span>${esc(LESSONS[S.at].title)}</span></div><i>Change</i></button>
+      </section>
+
+      <section>
+        <div class="sec-head"><span class="label">What's new</span><span class="sub">v${VERSION}</span></div>
+        ${Object.entries(CHANGES).map(([v, list], i) => `<details class="card changes" ${i ? '' : 'open'}><summary>v${v}${v === VERSION ? ' · this version' : ''}</summary>
+          <ul>${list.map(c => `<li>${esc(c)}</li>`).join('')}</ul></details>`).join('')}
+      </section>
+    </div>`;
+  S.ver = VERSION; save(); // seen the changes here, so no card on home
+  $('back').onclick = () => { home(); scrollTo(0, 0); };
+  $('mute').onclick = () => { S.muted = !S.muted; save(); profile(); sfx('ok'); };
+  $('change').onclick = picker;
+  app.querySelectorAll('[data-lesson]').forEach(b => b.onclick = () => start({ lesson: b.dataset.lesson }));
+  const tip = $('tip');
+  app.querySelectorAll('.day').forEach(b => {
+    const show = () => { tip.textContent = b.dataset.tip; app.querySelectorAll('.day').forEach(x => x.classList.toggle('on', x === b)); };
+    b.onclick = show; b.onmouseenter = show; b.onfocus = show;
+  });
+  scrollTo(0, 0);
 }
 
 // ── "Where are you on PC?" ──
@@ -149,10 +259,11 @@ function picker() {
 // Order: due (weakest first), then new (newest lessons first), then the rest (soonest due first).
 // Exercises you got right recently only show up when nothing else is left.
 const ROUND = 10, NEW_SLOTS = 3;
-function pickRound({ chapter, weak }) {
+function pickRound({ chapter, weak, lesson }) {
   let pool = unlocked();
   if (chapter) pool = pool.filter(e => chapterOf(e) === chapter);
   if (weak) pool = pool.filter(isWeak);
+  if (lesson) pool = pool.filter(e => e.l === lesson);
   const today_ = dayNum(), jitter = new Map(pool.map(e => [e, Math.random()]));
   const due = pool.filter(isDue).sort((a, b) => memOf(a)[0] - memOf(b)[0] || memOf(a)[1] - memOf(b)[1] || jitter.get(a) - jitter.get(b));
   const fresh = pool.filter(e => !memOf(e)).sort((a, b) => (idx(b.l) - idx(a.l)) * 0.15 + jitter.get(a) - jitter.get(b));
@@ -172,7 +283,7 @@ let R; // { queue, total, right, firstTry, missed:Set, seen:Set, xp, opts }
 function start(opts) {
   const queue = pickRound(opts).map(inst);
   if (!queue.length) return home();
-  R = { queue: shuffle(queue), total: queue.length, right: 0, firstTry: 0, missed: new Set(), seen: new Set(), xp: 0, opts };
+  R = { queue: shuffle(queue), total: queue.length, right: 0, firstTry: 0, missed: new Set(), seen: new Set(), xp: 0, opts, started: Date.now() };
   next();
 }
 
@@ -355,7 +466,12 @@ function check() {
   if (!ready || checked) return;
   checked = true;
   const e = R.queue[0], ok = grade(e), retry = R.missed.has(e);
-  if (!R.seen.has(e)) { R.seen.add(e); remember(e, ok); } // only the first attempt moves the review schedule
+  if (!R.seen.has(e)) { // only the first attempt counts, for review and for stats
+    R.seen.add(e); remember(e, ok);
+    const st = S.stats, ty = st.types[e.t] ||= [0, 0];
+    st.answered++; ty[1]++; if (ok) { st.firstTry++; ty[0]++; }
+    save();
+  }
   if (ok) {
     R.queue.shift(); R.right++;
     if (!retry) R.firstTry++;
@@ -395,7 +511,14 @@ function finish() {
     S.streak = S.day === yesterday() ? S.streak + 1 : 1;
     S.day = today();
   }
-  S.xp += R.xp; save();
+  S.xp += R.xp;
+  const st = S.stats, d = dayNum();
+  st.rounds++; if (R.firstTry === R.total) st.perfect++;
+  st.ms += Math.min(Date.now() - R.started, 30 * 60000); // cap so a round left open overnight doesn't count
+  st.best = Math.max(st.best, S.streak);
+  st.days[d] = (st.days[d] || 0) + R.xp;
+  for (const k in st.days) if (k < d - 90) delete st.days[k];
+  save();
   sfx('level');
   const acc = R.total ? Math.round(R.firstTry / R.total * 100) : 100;
   app.innerHTML = `<div class="screen"><div class="done">
